@@ -44,116 +44,76 @@ fprintf('【观测量】\n');
 fprintf('  R_obs   = %10.4f  N·s/kg     (sigma_R = %.4f)\n', R_obs, sigma_R);
 fprintf('  C_obs   = %10.6f  kg/(N·h)   (sigma_C = %.6f)\n\n', C_obs, sigma_C);
 
-%% -------- 3. 待反演参数的搜索网格（均匀先验区间）--------
-%  格式：[下界, 上界]，每个参数在此区间内均匀离散
-eta_k_range = [0.88, 1.12];   % 压气机效率修正系数
-eta_t_range = [0.88, 1.12];   % 涡轮效率修正系数
-eta_m_range = [0.95, 1.05];   % 机械效率修正系数
-eta_T_range = [0.95, 1.05];   % 燃烧室温度修正系数
+%% -------- 3. 待反演参数的先验搜索范围 --------
+%  格式：[下界, 上界]，均匀先验区间
+ranges = [0.88, 1.12;   % eta_k：压气机效率修正系数
+          0.88, 1.12;   % eta_t：涡轮效率修正系数
+          0.95, 1.05;   % eta_m：机械效率修正系数
+          0.95, 1.05];  % eta_T：燃烧室温度修正系数
 
-N_grid = 12;   % 每个维度的网格点数（增大可提高精度，计算量 ∝ N^4）
+%% -------- 4. 两阶段自适应细化网格搜索 --------
+%
+%  第一阶段（粗网格）：在整个先验区间内均匀采样，定位高后验区域
+%  第二阶段（细网格）：自动收缩到高后验区域后加密，提高分辨率
+%
+%  计算量：N_c^4 + N_f^4（两阶段之和）
 
-eta_k_vec = linspace(eta_k_range(1), eta_k_range(2), N_grid);
-eta_t_vec = linspace(eta_t_range(1), eta_t_range(2), N_grid);
-eta_m_vec = linspace(eta_m_range(1), eta_m_range(2), N_grid);
-eta_T_vec = linspace(eta_T_range(1), eta_T_range(2), N_grid);
+N_coarse = [10, 10,  8,  8];   % 各参数粗网格密度（可分别调整）
+N_fine   = [22, 22, 18, 18];   % 各参数细网格密度（最终结果用此网格）
+refine_pct = 0.90;             % 以累积边缘后验概率 refine_pct 收缩搜索区间
 
-total_pts = N_grid^4;
-fprintf('【网格设置】每维 %d 点，总计 %d 个网格点\n\n', N_grid, total_pts);
+% ---------- 第一阶段：粗网格 ----------
+fprintf('===== 第一阶段：粗网格搜索 =====\n');
+vecs_c = arrayfun(@(k) linspace(ranges(k,1), ranges(k,2), N_coarse(k)), ...
+                  1:4, 'UniformOutput', false);
+fprintf('  粗网格密度：[%d, %d, %d, %d]，共 %d 点\n', ...
+        N_coarse(1), N_coarse(2), N_coarse(3), N_coarse(4), prod(N_coarse));
 
-%% -------- 4. 粗网格搜索：遍历所有参数组合 --------
-% 维度顺序：(eta_k, eta_t, eta_m, eta_T)
-logPost     = -Inf(N_grid, N_grid, N_grid, N_grid);
-valid_cnt   = 0;
-invalid_cnt = 0;
-point_idx   = 0;
-report_step = max(1, floor(total_pts / 40));   % 约报告 40 次进度
+[logPost_c, vc_cnt, ic_cnt] = run_grid_search(vecs_c, params, R_obs, C_obs, sigma_R, sigma_C);
 
-fprintf('开始网格搜索...\n');
-t_start = tic;
-
-for i1 = 1:N_grid
-    for i2 = 1:N_grid
-        for i3 = 1:N_grid
-            for i4 = 1:N_grid
-                point_idx = point_idx + 1;
-
-                % 当前参数向量
-                theta = [eta_k_vec(i1), eta_t_vec(i2), ...
-                         eta_m_vec(i3), eta_T_vec(i4)];
-
-                % 调用前向模型（含异常处理）
-                try
-                    [R_pred, C_pred] = forward_model(theta, params);
-                catch ME
-                    R_pred = NaN;
-                    C_pred = NaN;
-                end
-
-                % 校验输出有效性
-                if isnan(R_pred) || isnan(C_pred) || ...
-                   ~isreal(R_pred) || ~isreal(C_pred) || ...
-                   R_pred <= 0    || C_pred <= 0
-                    invalid_cnt = invalid_cnt + 1;
-                    % logPost 保持 -Inf（已预填）
-                else
-                    % 高斯对数似然（均匀先验 → 对数后验 = 对数似然）
-                    logPost(i1,i2,i3,i4) = ...
-                        -0.5 * ((R_pred - R_obs) / sigma_R)^2 ...
-                        -0.5 * ((C_pred - C_obs) / sigma_C)^2;
-                    valid_cnt = valid_cnt + 1;
-                end
-
-                % 进度显示
-                if mod(point_idx, report_step) == 0 || point_idx == total_pts
-                    elapsed = toc(t_start);
-                    remain  = elapsed * (total_pts - point_idx) / max(point_idx,1);
-                    fprintf('  进度 %5.1f%%  有效=%d  无效=%d  剩余≈%.1fs\n', ...
-                            100*point_idx/total_pts, valid_cnt, invalid_cnt, remain);
-                end
-            end
-        end
-    end
+if vc_cnt == 0
+    error('粗网格阶段所有点均无效！请检查 forward_model 或参数范围。');
 end
 
-fprintf('\n搜索完成，耗时 %.2f 秒，有效点 %d / %d (%.1f%%)\n\n', ...
-        toc(t_start), valid_cnt, total_pts, 100*valid_cnt/total_pts);
+% 粗网格归一化
+[Post_norm_c, marg_c] = normalize_and_margin(logPost_c);
 
-if valid_cnt == 0
-    error('所有网格点均无效！请检查 forward_model 函数或参数搜索范围。');
-end
+% 根据粗网格边缘分布自动收缩搜索区间
+ranges_fine = shrink_ranges(vecs_c, marg_c, refine_pct, ranges);
 
-%% -------- 5. 数值稳定化 + 归一化 → 离散后验概率 --------
-% 减去最大对数值，防止 exp() 数值溢出
-valid_mask = isfinite(logPost);
-max_lp     = max(logPost(valid_mask));
-
-Post       = exp(logPost - max_lp);   % 平移后指数化
-Post(~valid_mask) = 0;                % 无效点置零
-Post_norm  = Post / sum(Post(:));     % 归一化为概率质量函数
-
-fprintf('归一化后验：有效概率总质量 = %.8f\n\n', sum(Post_norm(:)));
-
-%% -------- 6. 边缘后验分布 --------
-% Post_norm 维度：dim1=eta_k, dim2=eta_t, dim3=eta_m, dim4=eta_T
-% 各参数的一维边缘：对其余三个维度求和
-marg    = cell(1, 4);
-marg{1} = squeeze(sum(Post_norm, [2,3,4]));   % P(eta_k)
-marg{2} = squeeze(sum(Post_norm, [1,3,4]));   % P(eta_t)
-marg{3} = squeeze(sum(Post_norm, [1,2,4]));   % P(eta_m)
-marg{4} = squeeze(sum(Post_norm, [1,2,3]));   % P(eta_T)
-
-% 统一为列向量
+fprintf('\n  收缩后各参数搜索区间：\n');
+pnames_str = {'eta_k', 'eta_t', 'eta_m', 'eta_T'};
 for k = 1:4
-    marg{k} = marg{k}(:);
+    fprintf('    %-6s: [%.5f, %.5f]  →  [%.5f, %.5f]\n', ...
+            pnames_str{k}, ranges(k,1), ranges(k,2), ...
+            ranges_fine(k,1), ranges_fine(k,2));
 end
 
-%% -------- 7. 统计输出 --------
+% ---------- 第二阶段：细网格 ----------
+fprintf('\n===== 第二阶段：细化网格搜索 =====\n');
+vecs_f = arrayfun(@(k) linspace(ranges_fine(k,1), ranges_fine(k,2), N_fine(k)), ...
+                  1:4, 'UniformOutput', false);
+fprintf('  细网格密度：[%d, %d, %d, %d]，共 %d 点\n', ...
+        N_fine(1), N_fine(2), N_fine(3), N_fine(4), prod(N_fine));
+
+[logPost_f, vf_cnt, if_cnt] = run_grid_search(vecs_f, params, R_obs, C_obs, sigma_R, sigma_C);
+
+if vf_cnt == 0
+    error('细网格阶段所有点均无效！请检查前向模型。');
+end
+fprintf('  细网格有效点 %d / %d\n\n', vf_cnt, prod(N_fine));
+
+%% -------- 5. 数值稳定化 + 归一化（细网格结果）--------
+[Post_norm, marg] = normalize_and_margin(logPost_f);
+param_vecs = vecs_f;
+
+fprintf('细网格归一化后验总概率质量 = %.8f\n\n', sum(Post_norm(:)));
+
+%% -------- 6. 统计输出 --------
 param_names = {'\eta_k', '\eta_t', '\eta_m', '\eta_T'};
-param_vecs  = {eta_k_vec, eta_t_vec, eta_m_vec, eta_T_vec};
 print_statistics(param_names, param_vecs, marg);
 
-%% -------- 8. 绘图 --------
+%% -------- 7. 绘图 --------
 fprintf('正在绘图...\n');
 plot_marginal_posteriors(param_names, param_vecs, marg);
 plot_joint_matrix(param_names, param_vecs, marg, Post_norm);
@@ -167,6 +127,140 @@ fprintf('============================================\n');
 %% ============================================================
 %%                      局 部 函 数
 %% ============================================================
+
+%% -------- 网格搜索主体（供两阶段复用）--------
+function [logPost, valid_cnt, invalid_cnt] = ...
+        run_grid_search(vecs, params, R_obs, C_obs, sigma_R, sigma_C)
+    % 对 4 个参数向量的笛卡尔积进行穷举，返回对数后验 4D 数组
+    %
+    % 输入：
+    %   vecs      - cell{4}，各参数网格向量
+    %   params    - 固定参数结构体
+    %   R_obs / C_obs / sigma_R / sigma_C - 观测量和误差
+    % 输出：
+    %   logPost   - 对数后验（N1×N2×N3×N4），无效点为 -Inf
+    %   valid_cnt / invalid_cnt - 有效/无效点计数
+
+    N = cellfun(@numel, vecs);                     % 各维网格数
+    logPost     = -Inf(N(1), N(2), N(3), N(4));
+    valid_cnt   = 0;
+    invalid_cnt = 0;
+    total_pts   = prod(N);
+    point_idx   = 0;
+    report_step = max(1, floor(total_pts / 30));
+
+    t0 = tic;
+    for i1 = 1:N(1)
+        for i2 = 1:N(2)
+            for i3 = 1:N(3)
+                for i4 = 1:N(4)
+                    point_idx = point_idx + 1;
+                    theta = [vecs{1}(i1), vecs{2}(i2), ...
+                             vecs{3}(i3), vecs{4}(i4)];
+
+                    % 调用前向模型，异常安全处理
+                    try
+                        [R_pred, C_pred] = forward_model(theta, params);
+                    catch
+                        R_pred = NaN; C_pred = NaN;
+                    end
+
+                    % 有效性检验
+                    if isnan(R_pred) || isnan(C_pred) || ...
+                       ~isreal(R_pred) || ~isreal(C_pred) || ...
+                       R_pred <= 0    || C_pred <= 0
+                        invalid_cnt = invalid_cnt + 1;
+                    else
+                        % 高斯对数似然（均匀先验 → 对数后验 = 对数似然）
+                        logPost(i1,i2,i3,i4) = ...
+                            -0.5 * ((R_pred - R_obs) / sigma_R)^2 ...
+                            -0.5 * ((C_pred - C_obs) / sigma_C)^2;
+                        valid_cnt = valid_cnt + 1;
+                    end
+
+                    % 进度打印
+                    if mod(point_idx, report_step) == 0 || point_idx == total_pts
+                        elapsed = toc(t0);
+                        remain  = elapsed * (total_pts - point_idx) / max(point_idx, 1);
+                        fprintf('  进度 %5.1f%%  有效=%d  无效=%d  剩余≈%.1fs\n', ...
+                                100*point_idx/total_pts, valid_cnt, invalid_cnt, remain);
+                    end
+                end
+            end
+        end
+    end
+    fprintf('  完成，耗时 %.2f s，有效率 %.1f%%\n', toc(t0), 100*valid_cnt/total_pts);
+end
+
+%% -------- 数值稳定化 + 归一化 + 边缘分布 --------
+function [Post_norm, marg] = normalize_and_margin(logPost)
+    % 输入：logPost（4D，无效点为 -Inf）
+    % 输出：Post_norm（归一化后验），marg（cell{4}，各参数一维边缘）
+
+    valid_mask = isfinite(logPost);
+    if ~any(valid_mask(:))
+        error('normalize_and_margin：logPost 中无有效点。');
+    end
+
+    % 减去最大值防止溢出
+    max_lp = max(logPost(valid_mask));
+    Post   = exp(logPost - max_lp);
+    Post(~valid_mask) = 0;
+    Post_norm = Post / sum(Post(:));
+
+    % 各参数一维边缘后验（对其余三维求和）
+    marg    = cell(1, 4);
+    marg{1} = squeeze(sum(Post_norm, [2,3,4]));   % P(eta_k)
+    marg{2} = squeeze(sum(Post_norm, [1,3,4]));   % P(eta_t)
+    marg{3} = squeeze(sum(Post_norm, [1,2,4]));   % P(eta_m)
+    marg{4} = squeeze(sum(Post_norm, [1,2,3]));   % P(eta_T)
+    for k = 1:4
+        marg{k} = marg{k}(:);
+    end
+end
+
+%% -------- 根据粗网格边缘分布收缩搜索区间 --------
+function ranges_new = shrink_ranges(vecs, marg, pct, ranges_orig)
+    % 对每个参数，找到累积边缘后验概率覆盖 pct 的最小区间，
+    % 并在原始先验区间内适当外扩一个格距作为细网格区间
+    %
+    % 输入：
+    %   vecs        - cell{4}，粗网格向量
+    %   marg        - cell{4}，粗网格一维边缘后验（列向量）
+    %   pct         - 覆盖概率阈值（如 0.90）
+    %   ranges_orig - 4×2，原始先验区间（用于边界截断）
+    % 输出：
+    %   ranges_new  - 4×2，收缩后区间
+
+    ranges_new = zeros(4, 2);
+    alpha = (1 - pct) / 2;          % 双尾各 alpha 的概率
+
+    for k = 1:4
+        pvec = vecs{k}(:);
+        p    = marg{k}(:) / sum(marg{k});
+        dv   = pvec(2) - pvec(1);   % 粗网格步长
+        cdf  = cumsum(p);
+
+        % 找到 alpha 和 (1-alpha) 分位点对应的格点
+        idx_lo = find(cdf >= alpha,       1, 'first');
+        idx_hi = find(cdf >= 1 - alpha,   1, 'first');
+        idx_lo = max(idx_lo - 1, 1);
+        idx_hi = min(idx_hi + 1, length(pvec));
+
+        % 外扩一个粗格距，再用先验区间截断
+        lo = max(pvec(idx_lo) - dv, ranges_orig(k,1));
+        hi = min(pvec(idx_hi) + dv, ranges_orig(k,2));
+
+        % 防止区间退化（至少保留 2 倍粗格距宽）
+        if hi - lo < 2 * dv
+            center = (lo + hi) / 2;
+            lo = max(center - dv, ranges_orig(k,1));
+            hi = min(center + dv, ranges_orig(k,2));
+        end
+
+        ranges_new(k,:) = [lo, hi];
+    end
+end
 
 %% -------- 发动机固定参数 --------
 function params = setup_engine_params()
