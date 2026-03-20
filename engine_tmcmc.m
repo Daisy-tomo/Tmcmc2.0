@@ -58,6 +58,16 @@ fprintf('  lambda_heat = %.4f\n', aux_test.lambda_heat);
 fprintf('  L_sv = %.2f J/kg\n', aux_test.L_sv);
 fprintf('  x_pc = %.4f\n',   aux_test.x_pc);
 
+% 生成虚拟观测数据
+noise_level = 0.001;
+rng(42);
+y_true   = y_test;                          % [R_ud_true, C_ud_true]
+sigma_obs = noise_level * abs(y_true);      % [sigma_R, sigma_C]
+y_obs     = y_true + sigma_obs .* randn(1, 2);
+fprintf('\n生成虚拟观测数据：\n');
+fprintf('  R_obs = %.4f [N·s/kg]，  sigma_R = %.6f\n', y_obs(1), sigma_obs(1));
+fprintf('  C_obs = %.6f [kg/(N·h)]，sigma_C = %.8f\n', y_obs(2), sigma_obs(2));
+
 % -------------------------------------------------------------------------
 % 局部函数
 % -------------------------------------------------------------------------
@@ -224,4 +234,42 @@ try
 catch ME
     warning('engine_forward caught: %s', ME.message);
 end
+end
+
+function lp = log_prior(theta, lb, ub)
+% 均匀先验：参数在 [lb, ub] 内返回 0，否则返回 -Inf
+if all(theta >= lb) && all(theta <= ub)
+    lp = 0.0;
+else
+    lp = -Inf;
+end
+end
+
+function ll = log_likelihood(theta, y_obs, sigma_obs, cond)
+% 两个观测量的高斯对数似然
+% y_obs(1)=R_obs, y_obs(2)=C_obs；sigma_obs 同维
+ll = -Inf;
+[y_pred, ~] = engine_forward(theta, cond);
+if ~all(isfinite(y_pred))
+    return;
+end
+if any(sigma_obs <= 0)
+    return;
+end
+res = (y_obs - y_pred) ./ sigma_obs;
+ll  = -0.5 * sum(res.^2 + log(2 * pi * sigma_obs.^2));
+if ~isfinite(ll)
+    ll = -Inf;
+end
+end
+
+function lpost = log_posterior_fn(theta, y_obs, sigma_obs, lb, ub, cond)
+% 对数后验 = 对数先验 + 对数似然
+lp = log_prior(theta, lb, ub);
+if isinf(lp)
+    lpost = -Inf;
+    return;
+end
+ll    = log_likelihood(theta, y_obs, sigma_obs, cond);
+lpost = lp + ll;
 end
