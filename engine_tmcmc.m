@@ -58,15 +58,70 @@ fprintf('  lambda_heat = %.4f\n', aux_test.lambda_heat);
 fprintf('  L_sv = %.2f J/kg\n', aux_test.L_sv);
 fprintf('  x_pc = %.4f\n',   aux_test.x_pc);
 
-% 生成虚拟观测数据
+% ── 步骤1：生成虚拟观测数据 ──────────────────────────────────────────
 noise_level = 0.001;
 rng(42);
-y_true   = y_test;                          % [R_ud_true, C_ud_true]
-sigma_obs = noise_level * abs(y_true);      % [sigma_R, sigma_C]
+y_true    = y_test;                           % [R_ud_true, C_ud_true]
+sigma_obs = noise_level * abs(y_true);        % [sigma_R, sigma_C]
 y_obs     = y_true + sigma_obs .* randn(1, 2);
-fprintf('\n生成虚拟观测数据：\n');
-fprintf('  R_obs = %.4f [N·s/kg]，  sigma_R = %.6f\n', y_obs(1), sigma_obs(1));
-fprintf('  C_obs = %.6f [kg/(N·h)]，sigma_C = %.8f\n', y_obs(2), sigma_obs(2));
+fprintf('\n【步骤1】生成虚拟观测数据\n');
+fprintf('  R_true = %.6f,  R_obs = %.6f,  sigma_R = %.8f\n', y_true(1), y_obs(1), sigma_obs(1));
+fprintf('  C_true = %.8f,  C_obs = %.8f,  sigma_C = %.10f\n', y_true(2), y_obs(2), sigma_obs(2));
+
+% ── 步骤2：运行 TMCMC ────────────────────────────────────────────────
+fprintf('\n【步骤2】运行 TMCMC（N=%d, COV_target=%.1f, n_steps=%d, scale=%.2f）\n', ...
+        N, COV_target, n_steps, scale);
+t_start = tic;
+[samples, beta_hist, ess_hist, acc_hist] = ...
+    run_tmcmc(y_obs, sigma_obs, lb, ub, cond, N, COV_target, n_steps, scale);
+t_elapsed = toc(t_start);
+fprintf('TMCMC 完成，共 %d 层，耗时 %.1f 秒\n', length(acc_hist), t_elapsed);
+
+% ── 步骤3：计算 MAP 估计 ──────────────────────────────────────────────
+fprintf('\n【步骤3】计算 MAP 估计\n');
+theta_map  = compute_map(samples, y_obs, sigma_obs, lb, ub, cond);
+theta_mean = mean(samples, 1);
+
+% ── 步骤4：打印后验统计（每参数一行）────────────────────────────────
+n_params = length(lb);
+ci95     = zeros(n_params, 2);
+for i = 1:n_params
+    ci95(i, :) = quantile(samples(:, i), [0.025, 0.975]);
+end
+
+fprintf('\n【步骤4】后验统计结果\n');
+fprintf('%-14s  %8s  %8s  %8s  %8s  %8s\n', ...
+        '参数', '真值', '后验均值', 'MAP', 'CI95下', 'CI95上');
+fprintf('%s\n', repmat('-', 1, 68));
+for i = 1:n_params
+    fprintf('%-14s  %8.4f  %8.4f  %8.4f  %8.4f  %8.4f\n', ...
+            param_names{i}, theta_true(i), theta_mean(i), theta_map(i), ...
+            ci95(i,1), ci95(i,2));
+end
+
+% 后验预测对比
+[y_mean_pred, ~] = engine_forward(theta_mean, cond);
+[y_map_pred,  ~] = engine_forward(theta_map,  cond);
+fprintf('\n后验预测对比：\n');
+fprintf('  %-18s  %12s  %12s\n', '来源', 'R_ud [N·s/kg]', 'C_ud [kg/(N·h)]');
+fprintf('  %-18s  %12.6f  %12.8f\n', '真值',         y_true(1),       y_true(2));
+fprintf('  %-18s  %12.6f  %12.8f\n', '观测值',       y_obs(1),        y_obs(2));
+fprintf('  %-18s  %12.6f  %12.8f\n', '后验均值预测', y_mean_pred(1),  y_mean_pred(2));
+fprintf('  %-18s  %12.6f  %12.8f\n', 'MAP预测',      y_map_pred(1),   y_map_pred(2));
+
+% ── 步骤5：绘图 ──────────────────────────────────────────────────────
+fprintf('\n【步骤5】绘图\n');
+plot_results_tmcmc(samples, theta_true, param_names, beta_hist, ess_hist, acc_hist);
+plot_pairwise_posterior(samples, param_names);
+fprintf('图形已生成并保存\n');
+
+% ── 步骤6：保存结果 ───────────────────────────────────────────────────
+fprintf('\n【步骤6】保存结果到 tmcmc_results.mat\n');
+save('tmcmc_results.mat', 'samples', 'theta_map', 'theta_mean', 'ci95', ...
+     'beta_hist', 'ess_hist', 'acc_hist', 'theta_true', 'y_obs', 'sigma_obs', ...
+     'param_names', 'lb', 'ub', 'cond');
+fprintf('保存完成：tmcmc_results.mat\n');
+fprintf('\n全部流程完成。\n');
 
 % -------------------------------------------------------------------------
 % 局部函数
