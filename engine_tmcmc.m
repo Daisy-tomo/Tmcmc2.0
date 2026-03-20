@@ -273,3 +273,201 @@ end
 ll    = log_likelihood(theta, y_obs, sigma_obs, cond);
 lpost = lp + ll;
 end
+
+function [samples, beta_hist, ess_hist, acc_hist] = run_tmcmc( ...
+        y_obs, sigma_obs, lb, ub, cond, N, COV_target, n_steps, scale)
+% TMCMC (Transitional Markov Chain Monte Carlo)
+%
+% 输入：
+%   y_obs      - 观测值向量 [R_obs, C_obs]
+%   sigma_obs  - 观测噪声  [sigma_R, sigma_C]
+%   lb, ub     - 参数下/上界（1×13）
+%   cond       - 工况结构体
+%   N          - 粒子数
+%   COV_target - 权重变异系数目标阈值（典型值 1.0）
+%   n_steps    - 每粒子 MH 短链步数
+%   scale      - 提议协方差缩放因子
+%
+% 输出：
+%   samples    - 最终样本矩阵（N×13）
+%   beta_hist  - 每级 beta 值历史
+%   ess_hist   - 每级有效样本量历史
+%   acc_hist   - 每级 MH 平均接受率历史
+
+n_params = length(lb);
+
+% ── 步骤 1：从均匀先验采 N 个初始样本 ─────────────────────────────────
+samples  = bsxfun(@plus, lb, bsxfun(@times, rand(N, n_params), ub - lb));
+
+% 计算每个粒子的对数似然（初始时 beta=0，只需先算好备用）
+logL = zeros(N, 1);
+for i = 1:N
+    logL(i) = log_likelihood(samples(i,:), y_obs, sigma_obs, cond);
+end
+
+beta      = 0;
+beta_hist = 0;
+ess_hist  = N;        % 初始 ESS = N（均匀权重）
+acc_hist  = NaN;      % 第0级无 MH 步
+
+% ── 主循环：beta 从 0 推进到 1 ────────────────────────────────────────
+stage = 0;
+while beta < 1
+
+    stage = stage + 1;
+
+    % ── (a) 二分法确定 delta_beta ─────────────────────────────────────
+    % 目标：COV(w) = std(w)/mean(w) ≤ COV_target
+    % w_i = exp(delta_beta * logL_i)，对数稳定版本减去最大值
+    db_lo = 0;
+    db_hi = 1 - beta;
+
+    % 先检查上界是否已满足 COV 约束
+    cov_hi = compute_cov_weights(logL, db_hi);
+    if cov_hi <= COV_target
+        % 直接走到 beta=1
+        delta_beta = db_hi;
+    else
+        % 二分搜索
+        for bisect_iter = 1:50
+            db_mid  = 0.5 * (db_lo + db_hi);
+            cov_mid = compute_cov_weights(logL, db_mid);
+            if cov_mid < COV_target
+                db_lo = db_mid;
+            else
+                db_hi = db_mid;
+            end
+            if (db_hi - db_lo) < 1e-8
+                break;
+            end
+        end
+        delta_beta = db_lo;   % 保守侧：COV 不超标
+        if delta_beta < 1e-10
+            % 防止步长退化为零：强制最小步
+            delta_beta = 1e-6;
+        end
+    end
+
+    % 确保不超过 1
+    delta_beta = min(delta_beta, 1 - beta);
+    beta       = beta + delta_beta;
+
+    % ── (b) 计算归一化权重与 ESS ──────────────────────────────────────
+    log_w    = delta_beta * logL;
+    log_w    = log_w - max(log_w);          % 数值稳定
+    w        = exp(log_w);
+    w_norm   = w / sum(w);
+    ESS      = 1 / sum(w_norm.^2);
+
+    % ── (c) 残差重采样 ────────────────────────────────────────────────
+    idx      = residual_resample(w_norm, N);
+    samples  = samples(idx, :);
+    logL     = logL(idx);
+
+    % ── (d) 协方差自适应 MH 短链更新 ─────────────────────────────────
+    % 提议协方差：scale^2 × 当前样本经验协方差
+    S        = scale^2 * cov(samples);
+    % 保证正定：加小对角扰动
+    S        = S + 1e-10 * eye(n_params);
+
+    % Cholesky 分解用于高效采样
+    [L_chol, flag] = chol(S, 'lower');
+    if flag ~= 0
+        % 降级为对角提议
+        L_chol = diag(scale * (ub - lb) / 6);
+    end
+
+    n_accept_total = 0;
+    for i = 1:N
+        theta_curr = samples(i, :);
+        lL_curr    = logL(i);
+        lp_curr    = log_prior(theta_curr, lb, ub);
+        lpost_curr = lp_curr + beta * lL_curr;
+
+        n_accept_i = 0;
+        for s = 1:n_steps
+            % 生成提议样本
+            z           = L_chol * randn(n_params, 1);
+            theta_prop  = theta_curr + z';
+
+            % 先验检查（越界直接拒绝）
+            lp_prop = log_prior(theta_prop, lb, ub);
+            if isinf(lp_prop)
+                continue;
+            end
+
+            lL_prop    = log_likelihood(theta_prop, y_obs, sigma_obs, cond);
+            lpost_prop = lp_prop + beta * lL_prop;
+
+            % M-H 接受/拒绝
+            if log(rand()) < (lpost_prop - lpost_curr)
+                theta_curr = theta_prop;
+                lL_curr    = lL_prop;
+                lpost_curr = lpost_prop;
+                n_accept_i = n_accept_i + 1;
+            end
+        end
+
+        samples(i, :) = theta_curr;
+        logL(i)       = lL_curr;
+        n_accept_total = n_accept_total + n_accept_i;
+    end
+
+    acc_rate = n_accept_total / (N * n_steps);
+
+    % ── 记录本级统计 ──────────────────────────────────────────────────
+    beta_hist(end+1) = beta;          %#ok<AGROW>
+    ess_hist(end+1)  = ESS;           %#ok<AGROW>
+    acc_hist(end+1)  = acc_rate;      %#ok<AGROW>
+
+    fprintf('  stage %2d | beta=%.6f | delta_beta=%.2e | ESS=%6.1f | acc=%.3f\n', ...
+            stage, beta, delta_beta, ESS, acc_rate);
+end
+
+end  % run_tmcmc
+
+% ── 辅助：计算给定 delta_beta 下权重的变异系数 ────────────────────────
+function cov_val = compute_cov_weights(logL, delta_beta)
+log_w   = delta_beta * logL;
+log_w   = log_w - max(log_w);
+w       = exp(log_w);
+m       = mean(w);
+if m < 1e-300
+    cov_val = Inf;
+    return;
+end
+cov_val = std(w) / m;
+end
+
+% ── 辅助：残差重采样 ──────────────────────────────────────────────────
+function idx = residual_resample(w_norm, N)
+% 残差重采样：先确定性分配整数份额，余量用多项式重采样
+counts  = floor(N * w_norm(:));
+n_det   = sum(counts);
+n_res   = N - n_det;
+
+% 余量权重
+w_res   = N * w_norm(:) - counts;
+w_res   = w_res / sum(w_res);
+
+% 多项式重采样余量部分
+edges   = [0; cumsum(w_res)];
+u       = rand(n_res, 1);
+idx_res = zeros(n_res, 1);
+for k = 1:n_res
+    idx_res(k) = find(u(k) >= edges(1:end-1) & u(k) < edges(2:end), 1, 'first');
+end
+
+% 汇总索引
+idx_det = zeros(n_det, 1);
+pos = 1;
+for j = 1:N
+    for c = 1:counts(j)
+        idx_det(pos) = j;
+        pos = pos + 1;
+    end
+end
+
+idx = [idx_det; idx_res];
+idx = idx(randperm(N));   % 打乱顺序
+end
