@@ -1,62 +1,59 @@
-param_names = {
-    'eta_k',       ...  % 压气机绝热效率
-    'eta_t',       ...  % 涡轮绝热效率
-    'eta_m',       ...  % 机械效率
-    'eta_v',       ...  % 风扇效率
-    'eta_tv',      ...  % 风扇涡轮效率
-    'eta_c1',      ...  % 一次喷管效率
-    'eta_c2',      ...  % 二次喷管效率
-    'sigma_cc',    ...  % 进气道激波总压恢复系数
-    'sigma_kan',   ...  % 进气通道总压恢复系数
-    'sigma_kask',  ...  % 压气机级间总压恢复系数
-    'sigma_ks',    ...  % 燃烧室总压恢复系数
-    'eta_T',       ...  % 燃烧放热系数
-    'lambda'        ...  % 风扇涡轮热恢复系数
-};
+% =========================================================================
+%  推断参数：后验敏感性高的 4 个参数
+%  固定参数：其余 9 个参数取真值
+% =========================================================================
 
-lb = [0.84, 0.86, 0.980, 0.85, 0.90, 0.94, 0.92, 0.98, 0.98, 0.98, 0.94, 0.97, 1.02];
-ub = [0.86, 0.92, 0.995, 0.87, 0.92, 0.95, 0.94, 1.00, 0.99, 0.99, 0.96, 0.99, 1.04];
+% ── 推断参数（在全13维向量中的位置） ──────────────────────────────────
+active_idx  = [1, 2, 3, 12];          % eta_k / eta_t / eta_m / eta_T
+param_names = {'eta\_k', 'eta\_t', 'eta\_m', 'eta\_T'};
 
-theta_true = [
-    0.85,    ...  % eta_k
-    0.89,    ...  % eta_t
-    0.988,   ...  % eta_m
-    0.860,   ...  % eta_v
-    0.910,   ...  % eta_tv
-    0.945,   ...  % eta_c1
-    0.930,   ...  % eta_c2
-    0.990,   ...  % sigma_cc
-    0.985,   ...  % sigma_kan
-    0.985,   ...  % sigma_kask
-    0.950,   ...  % sigma_ks
-    0.980,   ...  % eta_T
-    1.030    ...  % lambda
+lb = [0.84, 0.86, 0.980, 0.97];       % 推断参数下界
+ub = [0.86, 0.92, 0.995, 0.99];       % 推断参数上界
+
+theta_true_active = [0.85, 0.89, 0.988, 0.980];  % 推断参数真值
+
+% ── 全参数真值（固定参数保持不变，推断参数位置同真值） ─────────────────
+theta_fixed_full = [
+    0.850,   ...  % (1)  eta_k      ← 推断
+    0.890,   ...  % (2)  eta_t      ← 推断
+    0.988,   ...  % (3)  eta_m      ← 推断
+    0.860,   ...  % (4)  eta_v      固定
+    0.910,   ...  % (5)  eta_tv     固定
+    0.945,   ...  % (6)  eta_c1     固定
+    0.930,   ...  % (7)  eta_c2     固定
+    0.990,   ...  % (8)  sigma_cc   固定
+    0.985,   ...  % (9)  sigma_kan  固定
+    0.985,   ...  % (10) sigma_kask 固定
+    0.950,   ...  % (11) sigma_ks   固定
+    0.980,   ...  % (12) eta_T      ← 推断
+    1.030    ...  % (13) lambda     固定
 ];
 
-cond.T_H       = 288;
-cond.M_flight  = 0.0;
-cond.m         = 10.0;
-cond.pi_k      = 33.0;
-cond.T_g       = 1700.0;
+cond.T_H         = 288;
+cond.M_flight    = 0.0;
+cond.m           = 10.0;
+cond.pi_k        = 33.0;
+cond.T_g         = 1700.0;
+cond.theta_fixed = theta_fixed_full;  % 传入似然函数，组装完整 theta
+cond.active_idx  = active_idx;
 
-N          = 500;
+N          = 1000;
 COV_target = 1.0;
 n_steps    = 3;
 scale      = 0.2;
 
-disp('参数定义完成')
+fprintf('参数定义完成：%d 个推断参数 + %d 个固定参数\n', ...
+        length(lb), length(theta_fixed_full) - length(lb));
 
-% 测试：用 theta_true 调用前向模型
-[y_test, aux_test] = engine_forward(theta_true, cond);
+% 测试：用完整真值调用前向模型
+[y_test, aux_test] = engine_forward(theta_fixed_full, cond);
 fprintf('engine_forward 测试结果：\n');
-fprintf('  R_ud = %.4f [N·s/kg]\n', y_test(1));
+fprintf('  R_ud = %.4f [N·s/kg]\n',  y_test(1));
 fprintf('  C_ud = %.6f [kg/(N·h)]\n', y_test(2));
-fprintf('  T_B  = %.2f K\n', aux_test.T_B);
-fprintf('  T_k  = %.2f K\n', aux_test.T_k);
-fprintf('  g_T  = %.6f\n',   aux_test.g_T);
-fprintf('  lambda_heat = %.4f\n', aux_test.lambda_heat);
+fprintf('  T_B  = %.2f K\n',  aux_test.T_B);
+fprintf('  T_k  = %.2f K\n',  aux_test.T_k);
+fprintf('  g_T  = %.6f\n',    aux_test.g_T);
 fprintf('  L_sv = %.2f J/kg\n', aux_test.L_sv);
-fprintf('  x_pc = %.4f\n',   aux_test.x_pc);
 
 % ── 步骤1：生成虚拟观测数据 ──────────────────────────────────────────
 noise_level = 0.001;
@@ -69,7 +66,7 @@ fprintf('  R_true = %.6f,  R_obs = %.6f,  sigma_R = %.8f\n', y_true(1), y_obs(1)
 fprintf('  C_true = %.8f,  C_obs = %.8f,  sigma_C = %.10f\n', y_true(2), y_obs(2), sigma_obs(2));
 
 % ── 步骤2：运行 TMCMC ────────────────────────────────────────────────
-fprintf('\n【步骤2】运行 TMCMC（N=%d, COV_target=%.1f, n_steps=%d, scale=%.2f）\n', ...
+fprintf('\n【步骤2】运行 TMCMC（4参数，N=%d, COV_target=%.1f, n_steps=%d, scale=%.2f）\n', ...
         N, COV_target, n_steps, scale);
 t_start = tic;
 [samples, beta_hist, ess_hist, acc_hist] = ...
@@ -90,18 +87,22 @@ for i = 1:n_params
 end
 
 fprintf('\n【步骤4】后验统计结果\n');
-fprintf('%-14s  %8s  %8s  %8s  %8s  %8s\n', ...
+fprintf('%-12s  %8s  %8s  %8s  %8s  %8s\n', ...
         '参数', '真值', '后验均值', 'MAP', 'CI95下', 'CI95上');
-fprintf('%s\n', repmat('-', 1, 68));
+fprintf('%s\n', repmat('-', 1, 64));
 for i = 1:n_params
-    fprintf('%-14s  %8.4f  %8.4f  %8.4f  %8.4f  %8.4f\n', ...
-            param_names{i}, theta_true(i), theta_mean(i), theta_map(i), ...
+    fprintf('%-12s  %8.4f  %8.4f  %8.4f  %8.4f  %8.4f\n', ...
+            param_names{i}, theta_true_active(i), theta_mean(i), theta_map(i), ...
             ci95(i,1), ci95(i,2));
 end
 
-% 后验预测对比
-[y_mean_pred, ~] = engine_forward(theta_mean, cond);
-[y_map_pred,  ~] = engine_forward(theta_map,  cond);
+% 后验预测对比（组装完整 13 维向量）
+theta_mean_full = theta_fixed_full;
+theta_mean_full(active_idx) = theta_mean;
+theta_map_full  = theta_fixed_full;
+theta_map_full(active_idx)  = theta_map;
+[y_mean_pred, ~] = engine_forward(theta_mean_full, cond);
+[y_map_pred,  ~] = engine_forward(theta_map_full,  cond);
 fprintf('\n后验预测对比：\n');
 fprintf('  %-18s  %12s  %12s\n', '来源', 'R_ud [N·s/kg]', 'C_ud [kg/(N·h)]');
 fprintf('  %-18s  %12.6f  %12.8f\n', '真值',         y_true(1),       y_true(2));
@@ -111,14 +112,15 @@ fprintf('  %-18s  %12.6f  %12.8f\n', 'MAP预测',      y_map_pred(1),   y_map_pr
 
 % ── 步骤5：绘图 ──────────────────────────────────────────────────────
 fprintf('\n【步骤5】绘图\n');
-plot_results_tmcmc(samples, theta_true, param_names, beta_hist, ess_hist, acc_hist);
-plot_pairwise_posterior(samples, param_names);
+plot_results_tmcmc(samples, theta_true_active, param_names, beta_hist, ess_hist, acc_hist);
+plot_pairwise_posterior(samples, param_names, lb, ub, theta_true_active);
 fprintf('图形已生成并保存\n');
 
 % ── 步骤6：保存结果 ───────────────────────────────────────────────────
 fprintf('\n【步骤6】保存结果到 tmcmc_results.mat\n');
 save('tmcmc_results.mat', 'samples', 'theta_map', 'theta_mean', 'ci95', ...
-     'beta_hist', 'ess_hist', 'acc_hist', 'theta_true', 'y_obs', 'sigma_obs', ...
+     'beta_hist', 'ess_hist', 'acc_hist', 'theta_true_active', ...
+     'theta_fixed_full', 'active_idx', 'y_obs', 'sigma_obs', ...
      'param_names', 'lb', 'ub', 'cond');
 fprintf('保存完成：tmcmc_results.mat\n');
 fprintf('\n全部流程完成。\n');
@@ -301,10 +303,20 @@ end
 end
 
 function ll = log_likelihood(theta, y_obs, sigma_obs, cond)
-% 两个观测量的高斯对数似然
-% y_obs(1)=R_obs, y_obs(2)=C_obs；sigma_obs 同维
+% 两个观测量的高斯对数似然（支持降维推断）
+% theta 为推断参数（可能是4维），通过 cond.theta_fixed + cond.active_idx
+% 组装完整的13维参数向量，再调用 engine_forward
 ll = -Inf;
-[y_pred, ~] = engine_forward(theta, cond);
+
+% 组装完整参数向量
+if isfield(cond, 'theta_fixed') && isfield(cond, 'active_idx')
+    theta_full = cond.theta_fixed;
+    theta_full(cond.active_idx) = theta;
+else
+    theta_full = theta;
+end
+
+[y_pred, ~] = engine_forward(theta_full, cond);
 if ~all(isfinite(y_pred))
     return;
 end
@@ -539,75 +551,74 @@ theta_map = samples(best, :);
 end
 
 function plot_results_tmcmc(samples, theta_true, param_names, beta_hist, ess_hist, acc_hist)
-% 图1：13个参数边缘后验直方图（4×4 subplot，最后格留空）
-% 图2：beta演化、ESS、接受率
+% 图1：4个推断参数边缘后验（2×2 subplot）
+% 图2：beta演化 / ESS / 接受率诊断
 
 N        = size(samples, 1);
 n_params = length(param_names);
 mu       = mean(samples, 1);
 
-% 计算 MAP（后验最大密度点用核密度估计众数近似）
-theta_map = zeros(1, n_params);
+% KDE 众数近似 MAP
+theta_map_kde = zeros(1, n_params);
 for i = 1:n_params
     [f, xi] = ksdensity(samples(:, i));
     [~, mi] = max(f);
-    theta_map(i) = xi(mi);
+    theta_map_kde(i) = xi(mi);
 end
 
-% ── 图1：边缘后验直方图 ────────────────────────────────────────────────
-fig1 = figure('Name', 'TMCMC 边缘后验分布', 'Position', [50, 50, 1400, 960]);
-n_cols = 4;
-n_rows = 4;  % 4×4=16 格，13个参数 + 3格空白
-
+% ── 图1：边缘后验直方图（2×2） ─────────────────────────────────────────
+fig1 = figure('Name', 'TMCMC 边缘后验分布', 'Position', [50, 50, 900, 780]);
 for i = 1:n_params
-    subplot(n_rows, n_cols, i);
-    histogram(samples(:, i), 35, 'Normalization', 'pdf', ...
-        'FaceColor', [0.35 0.60 0.88], 'EdgeColor', 'none', 'FaceAlpha', 0.75);
+    subplot(2, 2, i);
+    histogram(samples(:, i), 45, 'Normalization', 'pdf', ...
+        'FaceColor', [0.15 0.45 0.78], 'EdgeColor', 'none', 'FaceAlpha', 0.72);
     hold on;
-    xline(theta_true(i), 'g-',  'LineWidth', 2.0);
-    xline(mu(i),         'r--', 'LineWidth', 1.8);
-    xline(theta_map(i),  'm:',  'LineWidth', 1.8);
-    xlabel(param_names{i}, 'FontSize', 8);
-    ylabel('PDF',           'FontSize', 7);
+    [f_kde, xi_kde] = ksdensity(samples(:, i));
+    plot(xi_kde, f_kde, 'g--', 'LineWidth', 2.0);
+    xline(theta_true(i),      'r-',  'LineWidth', 2.0, 'Label', '真值');
+    xline(mu(i),              'k--', 'LineWidth', 1.5, 'Label', '均值');
+    xline(theta_map_kde(i),   'm:',  'LineWidth', 1.8, 'Label', 'MAP');
+    hold off;
+    xlabel(param_names{i}, 'FontSize', 10, 'Interpreter', 'tex');
+    ylabel('PDF', 'FontSize', 9);
     title(sprintf('%s\n真=%.4f  均=%.4f  MAP=%.4f', ...
-          param_names{i}, theta_true(i), mu(i), theta_map(i)), 'FontSize', 7);
+          strrep(param_names{i}, '\', ''), ...
+          theta_true(i), mu(i), theta_map_kde(i)), 'FontSize', 9);
     if i == 1
-        legend('后验', '真值', '均值', 'MAP', 'FontSize', 6, 'Location', 'best');
+        legend('后验', 'KDE', '真值', '均值', 'MAP', 'FontSize', 7, 'Location', 'best');
     end
+    grid on; box on;
 end
-sgtitle('TMCMC 边缘后验分布（各参数）', 'FontSize', 12);
+sgtitle('TMCMC 边缘后验分布（4个推断参数）', 'FontSize', 13, 'FontWeight', 'bold');
 
-% ── 图2：beta演化 / ESS / 接受率 ─────────────────────────────────────
-fig2 = figure('Name', 'TMCMC 收敛诊断', 'Position', [100, 100, 1000, 700]);
-
-% 去掉 beta_hist 第一个元素（初始 beta=0，无对应 ESS/acc）
+% ── 图2：收敛诊断 ─────────────────────────────────────────────────────
+fig2 = figure('Name', 'TMCMC 收敛诊断', 'Position', [100, 80, 1000, 720]);
 stages = 1:length(acc_hist);
 
 subplot(3, 1, 1);
-plot(stages, beta_hist(2:end), 'b-o', 'MarkerSize', 4, 'LineWidth', 1.2);
-yline(1.0, 'r--', 'LineWidth', 1.0);
-xlabel('stage'); ylabel('\beta');
-title('beta 演化');
-grid on;
+plot(stages, beta_hist(2:end), 'b-o', 'MarkerSize', 5, 'LineWidth', 1.5);
+yline(1.0, 'r--', 'LineWidth', 1.2);
+xlabel('stage'); ylabel('\beta'); title('\beta 演化');
+xlim([1, max(stages)]); grid on; box on;
 
 subplot(3, 1, 2);
-plot(stages, ess_hist(2:end), 'k-s', 'MarkerSize', 4, 'LineWidth', 1.2);
-yline(N * 0.5, 'r--', 'LineWidth', 1.0);
+plot(stages, ess_hist(2:end), 'k-s', 'MarkerSize', 5, 'LineWidth', 1.5);
+yline(N * 0.5, 'r--', 'LineWidth', 1.2);
 xlabel('stage'); ylabel('ESS');
 title(sprintf('有效样本量（虚线 = N/2 = %d）', round(N * 0.5)));
-grid on;
+xlim([1, max(stages)]); grid on; box on;
 
 subplot(3, 1, 3);
-plot(stages, acc_hist, 'r-^', 'MarkerSize', 4, 'LineWidth', 1.2);
-yline(0.23, 'b--', 'LineWidth', 1.0);
-ylim([0, 1]);
+plot(stages, acc_hist, 'r-^', 'MarkerSize', 5, 'LineWidth', 1.5);
+yline(0.234, 'b--', 'LineWidth', 1.2);
+ylim([0, 1]); xlim([1, max(stages)]);
 xlabel('stage'); ylabel('接受率');
-title('MH 短链接受率（虚线 = 0.23 最优）');
-grid on;
+title('MH 短链接受率（虚线 = 0.234 最优）');
+grid on; box on;
 
-sgtitle('TMCMC 收敛诊断', 'FontSize', 12);
+sgtitle('TMCMC 收敛诊断', 'FontSize', 13, 'FontWeight', 'bold');
 
-% 保存图形
+% 保存
 try
     saveas(fig1, 'tmcmc_marginals.png');
     saveas(fig2, 'tmcmc_diagnostics.png');
@@ -616,52 +627,138 @@ catch
 end
 end
 
-function plot_pairwise_posterior(samples, param_names)
-% 前6个参数的 pair plot（6×6 subplot）
-% 对角线：直方图；非对角线：随机取200点散点图
+function plot_pairwise_posterior(samples, param_names, lb, ub, theta_true)
+% 4×4 两两参数联合后验分布图，风格参照参考图：
+%   对角线（row==col）：TMCMC直方图 + 均匀先验（橙色实线） + 后验KDE（绿色虚线）
+%   上三角（row < col）：散点图（青色点）
+%   下三角（row > col）：2D 密度热图（parula 色图，蓝→黄）
 
-n_sub    = 6;
-max_pts  = 200;
-N        = size(samples, 1);
-sub_samp = samples(:, 1:n_sub);
+n  = size(samples, 2);        % 参数个数（4）
+N  = size(samples, 1);        % 样本数
 
-% 随机抽取用于散点图的索引
-idx_sc = randperm(N, min(max_pts, N));
+% 散点图随机子集
+n_sc   = min(2000, N);
+idx_sc = randperm(N, n_sc);
 
-fig = figure('Name', 'TMCMC Pair Plot（前6参数）', 'Position', [80, 80, 1100, 1000]);
+% 颜色定义
+col_hist  = [0.09 0.40 0.72];   % 深蓝，直方图
+col_prior = [1.00 0.55 0.00];   % 橙色，先验
+col_kde   = [0.05 0.72 0.18];   % 绿色，后验KDE
+col_scat  = [0.00 0.60 0.60];   % 青绿，散点
 
-for row = 1:n_sub
-    for col = 1:n_sub
-        subplot(n_sub, n_sub, (row-1)*n_sub + col);
+fig = figure('Name', '两两参数联合后验分布', ...
+             'Position', [50, 50, 980, 880], ...
+             'Color', 'w');
 
+% 预计算对角格 x 轴范围（稍宽于样本范围，便于先验线对齐）
+x_lo = zeros(1, n);
+x_hi = zeros(1, n);
+for k = 1:n
+    span   = ub(k) - lb(k);
+    x_lo(k) = lb(k) - 0.08 * span;
+    x_hi(k) = ub(k) + 0.08 * span;
+end
+
+for row = 1:n
+    for col = 1:n
+
+        ax = subplot(n, n, (row-1)*n + col);
+
+        % ── 对角线：边缘后验 ──────────────────────────────────────────
         if row == col
-            % 对角线：边缘直方图
-            histogram(sub_samp(:, col), 25, 'Normalization', 'pdf', ...
-                'FaceColor', [0.35 0.60 0.88], 'EdgeColor', 'none', 'FaceAlpha', 0.8);
-            xlabel(param_names{col}, 'FontSize', 6);
-            ylabel('PDF', 'FontSize', 6);
+            x_data = samples(:, col);
+            xi_plot = linspace(x_lo(col), x_hi(col), 400);
 
-        else
-            % 非对角线：散点图（随机200点）
-            scatter(sub_samp(idx_sc, col), sub_samp(idx_sc, row), ...
-                4, [0.2 0.4 0.7], 'filled', 'MarkerFaceAlpha', 0.4);
-            xlabel(param_names{col}, 'FontSize', 6);
-            ylabel(param_names{row}, 'FontSize', 6);
+            % 直方图
+            histogram(x_data, 45, 'Normalization', 'pdf', ...
+                'FaceColor', col_hist, 'EdgeColor', 'none', 'FaceAlpha', 0.70);
+            hold on;
+
+            % 均匀先验（橙色实线，在 [lb, ub] 内为常数，外为0）
+            prior_h = 1.0 / (ub(col) - lb(col));
+            xi_pr   = linspace(lb(col), ub(col), 400);
+            ph = plot(xi_pr, prior_h * ones(size(xi_pr)), '-', ...
+                'Color', col_prior, 'LineWidth', 2.2);
+
+            % 后验KDE（绿色虚线）
+            [f_kde, xi_kde] = ksdensity(x_data, xi_plot);
+            kh = plot(xi_kde, f_kde, '--', 'Color', col_kde, 'LineWidth', 2.2);
+
+            % 真值竖线（红色细线）
+            if nargin >= 5
+                xline(theta_true(col), 'r:', 'LineWidth', 1.4);
+            end
+
+            hold off;
+            xlim([x_lo(col), x_hi(col)]);
+            xlabel(param_names{col}, 'FontSize', 9, 'Interpreter', 'tex');
+
+            % 仅在左上角格显示图例
+            if row == 1 && col == 1
+                legend([ph, kh], {'先验分布', '贝叶斯积分'}, ...
+                    'FontSize', 7.5, 'Location', 'northeast', 'Box', 'off');
+            end
+
+        % ── 上三角：散点图 ────────────────────────────────────────────
+        elseif row < col
+            scatter(samples(idx_sc, col), samples(idx_sc, row), ...
+                3, col_scat, 'filled', 'MarkerFaceAlpha', 0.30);
+            xlim([x_lo(col), x_hi(col)]);
+            ylim([x_lo(row), x_hi(row)]);
+            xlabel(param_names{col}, 'FontSize', 7.5, 'Interpreter', 'tex');
+            ylabel(param_names{row}, 'FontSize', 7.5, 'Interpreter', 'tex');
+
+        % ── 下三角：2D 密度热图 ───────────────────────────────────────
+        else  % row > col
+            x = samples(:, col);
+            y = samples(:, row);
+
+            % 2D 直方图计数
+            n_bins  = 40;
+            xe = linspace(quantile(x, 0.001), quantile(x, 0.999), n_bins+1);
+            ye = linspace(quantile(y, 0.001), quantile(y, 0.999), n_bins+1);
+            H  = histcounts2(x, y, xe, ye);   % size: n_bins × n_bins
+
+            % 2D 高斯平滑（无需 toolbox：conv2 + 手工核）
+            kern = [1 2 3 2 1]' * [1 2 3 2 1] / 81;   % 5×5
+            H_sm = conv2(double(H), kern, 'same');
+
+            xc = 0.5 * (xe(1:end-1) + xe(2:end));
+            yc = 0.5 * (ye(1:end-1) + ye(2:end));
+
+            % imagesc：行→y，列→x，故转置
+            imagesc(xc, yc, H_sm');
+            set(ax, 'YDir', 'normal');
+            colormap(ax, parula);
+
+            xlabel(param_names{col}, 'FontSize', 7.5, 'Interpreter', 'tex');
+            ylabel(param_names{row}, 'FontSize', 7.5, 'Interpreter', 'tex');
         end
 
-        ax = gca;
-        ax.FontSize    = 6;
-        ax.TickLength  = [0.02, 0.02];
-        ax.XTickMode   = 'auto';
-        ax.YTickMode   = 'auto';
+        ax.FontSize   = 7.5;
+        ax.TickLength = [0.025, 0.025];
+        box on;
     end
 end
 
-sgtitle('后验联合分布 Pair Plot（前6参数）', 'FontSize', 11);
+% ── 底部统一图例 ───────────────────────────────────────────────────────
+% 在 figure 底部添加一个不可见 axes 放图例，模拟参考图样式
+axes('Position', [0.1, 0.005, 0.8, 0.040], 'Visible', 'off');
+hold on;
+lh1 = plot(NaN, NaN, '-',  'Color', col_prior, 'LineWidth', 2.2);
+lh2 = plot(NaN, NaN, '--', 'Color', col_kde,   'LineWidth', 2.2);
+lh3 = patch(NaN, NaN, col_hist, 'EdgeColor', 'none', 'FaceAlpha', 0.75);
+legend([lh1, lh2, lh3], {'先验分布', '贝叶斯积分', 'TMCMC'}, ...
+    'Orientation', 'horizontal', 'FontSize', 10, ...
+    'Location', 'south', 'Box', 'off');
+hold off;
+
+sgtitle('两两参数联合后验分布', 'FontSize', 14, 'FontWeight', 'bold');
 
 try
     saveas(fig, 'tmcmc_pairplot.png');
+    fprintf('  已保存：tmcmc_pairplot.png\n');
 catch
-    fprintf('Pair plot 保存失败\n');
+    fprintf('  Pair plot 保存失败\n');
 end
 end
