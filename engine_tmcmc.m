@@ -471,3 +471,142 @@ end
 idx = [idx_det; idx_res];
 idx = idx(randperm(N));   % 打乱顺序
 end
+
+function theta_map = compute_map(samples, y_obs, sigma_obs, lb, ub, cond)
+% 对所有样本计算完整对数后验，返回最大值对应的样本
+N      = size(samples, 1);
+lpost  = -Inf * ones(N, 1);
+for i = 1:N
+    lpost(i) = log_posterior_fn(samples(i,:), y_obs, sigma_obs, lb, ub, cond);
+end
+[~, best] = max(lpost);
+theta_map = samples(best, :);
+end
+
+function plot_results_tmcmc(samples, theta_true, param_names, beta_hist, ess_hist, acc_hist)
+% 图1：13个参数边缘后验直方图（4×4 subplot，最后格留空）
+% 图2：beta演化、ESS、接受率
+
+N        = size(samples, 1);
+n_params = length(param_names);
+mu       = mean(samples, 1);
+
+% 计算 MAP（后验最大密度点用核密度估计众数近似）
+theta_map = zeros(1, n_params);
+for i = 1:n_params
+    [f, xi] = ksdensity(samples(:, i));
+    [~, mi] = max(f);
+    theta_map(i) = xi(mi);
+end
+
+% ── 图1：边缘后验直方图 ────────────────────────────────────────────────
+fig1 = figure('Name', 'TMCMC 边缘后验分布', 'Position', [50, 50, 1400, 960]);
+n_cols = 4;
+n_rows = 4;  % 4×4=16 格，13个参数 + 3格空白
+
+for i = 1:n_params
+    subplot(n_rows, n_cols, i);
+    histogram(samples(:, i), 35, 'Normalization', 'pdf', ...
+        'FaceColor', [0.35 0.60 0.88], 'EdgeColor', 'none', 'FaceAlpha', 0.75);
+    hold on;
+    xline(theta_true(i), 'g-',  'LineWidth', 2.0);
+    xline(mu(i),         'r--', 'LineWidth', 1.8);
+    xline(theta_map(i),  'm:',  'LineWidth', 1.8);
+    xlabel(param_names{i}, 'FontSize', 8);
+    ylabel('PDF',           'FontSize', 7);
+    title(sprintf('%s\n真=%.4f  均=%.4f  MAP=%.4f', ...
+          param_names{i}, theta_true(i), mu(i), theta_map(i)), 'FontSize', 7);
+    if i == 1
+        legend('后验', '真值', '均值', 'MAP', 'FontSize', 6, 'Location', 'best');
+    end
+end
+sgtitle('TMCMC 边缘后验分布（各参数）', 'FontSize', 12);
+
+% ── 图2：beta演化 / ESS / 接受率 ─────────────────────────────────────
+fig2 = figure('Name', 'TMCMC 收敛诊断', 'Position', [100, 100, 1000, 700]);
+
+% 去掉 beta_hist 第一个元素（初始 beta=0，无对应 ESS/acc）
+stages = 1:length(acc_hist);
+
+subplot(3, 1, 1);
+plot(stages, beta_hist(2:end), 'b-o', 'MarkerSize', 4, 'LineWidth', 1.2);
+yline(1.0, 'r--', 'LineWidth', 1.0);
+xlabel('stage'); ylabel('\beta');
+title('beta 演化');
+grid on;
+
+subplot(3, 1, 2);
+plot(stages, ess_hist(2:end), 'k-s', 'MarkerSize', 4, 'LineWidth', 1.2);
+yline(N * 0.5, 'r--', 'LineWidth', 1.0);
+xlabel('stage'); ylabel('ESS');
+title(sprintf('有效样本量（虚线 = N/2 = %d）', round(N * 0.5)));
+grid on;
+
+subplot(3, 1, 3);
+plot(stages, acc_hist, 'r-^', 'MarkerSize', 4, 'LineWidth', 1.2);
+yline(0.23, 'b--', 'LineWidth', 1.0);
+ylim([0, 1]);
+xlabel('stage'); ylabel('接受率');
+title('MH 短链接受率（虚线 = 0.23 最优）');
+grid on;
+
+sgtitle('TMCMC 收敛诊断', 'FontSize', 12);
+
+% 保存图形
+try
+    saveas(fig1, 'tmcmc_marginals.png');
+    saveas(fig2, 'tmcmc_diagnostics.png');
+catch
+    fprintf('图形保存失败\n');
+end
+end
+
+function plot_pairwise_posterior(samples, param_names)
+% 前6个参数的 pair plot（6×6 subplot）
+% 对角线：直方图；非对角线：随机取200点散点图
+
+n_sub    = 6;
+max_pts  = 200;
+N        = size(samples, 1);
+sub_samp = samples(:, 1:n_sub);
+
+% 随机抽取用于散点图的索引
+idx_sc = randperm(N, min(max_pts, N));
+
+fig = figure('Name', 'TMCMC Pair Plot（前6参数）', 'Position', [80, 80, 1100, 1000]);
+
+for row = 1:n_sub
+    for col = 1:n_sub
+        subplot(n_sub, n_sub, (row-1)*n_sub + col);
+
+        if row == col
+            % 对角线：边缘直方图
+            histogram(sub_samp(:, col), 25, 'Normalization', 'pdf', ...
+                'FaceColor', [0.35 0.60 0.88], 'EdgeColor', 'none', 'FaceAlpha', 0.8);
+            xlabel(param_names{col}, 'FontSize', 6);
+            ylabel('PDF', 'FontSize', 6);
+
+        else
+            % 非对角线：散点图（随机200点）
+            scatter(sub_samp(idx_sc, col), sub_samp(idx_sc, row), ...
+                4, [0.2 0.4 0.7], 'filled', 'MarkerFaceAlpha', 0.4);
+            xlabel(param_names{col}, 'FontSize', 6);
+            ylabel(param_names{row}, 'FontSize', 6);
+        end
+
+        ax = gca;
+        ax.FontSize    = 6;
+        ax.TickLength  = [0.02, 0.02];
+        ax.XTickMode   = 'auto';
+        ax.YTickMode   = 'auto';
+    end
+end
+
+sgtitle('后验联合分布 Pair Plot（前6参数）', 'FontSize', 11);
+
+try
+    saveas(fig, 'tmcmc_pairplot.png');
+catch
+    fprintf('Pair plot 保存失败\n');
+end
+end
