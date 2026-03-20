@@ -593,25 +593,31 @@ sgtitle('TMCMC 边缘后验分布（4个推断参数）', 'FontSize', 13, 'FontW
 
 % ── 图2：收敛诊断 ─────────────────────────────────────────────────────
 fig2 = figure('Name', 'TMCMC 收敛诊断', 'Position', [100, 80, 1000, 720]);
-stages = 1:length(acc_hist);
+% acc_hist(1)=NaN 对应初始 beta=0（无 MH 步），实际阶段从 index 2 开始
+% beta_hist / ess_hist 同样 index 1 对应初始状态
+n_stages = length(acc_hist) - 1;   % 真实 MH 阶段数
+stages   = 1:n_stages;
 
 subplot(3, 1, 1);
 plot(stages, beta_hist(2:end), 'b-o', 'MarkerSize', 5, 'LineWidth', 1.5);
 yline(1.0, 'r--', 'LineWidth', 1.2);
 xlabel('stage'); ylabel('\beta'); title('\beta 演化');
-xlim([1, max(stages)]); grid on; box on;
+if n_stages > 1, xlim([1, n_stages]); end
+grid on; box on;
 
 subplot(3, 1, 2);
 plot(stages, ess_hist(2:end), 'k-s', 'MarkerSize', 5, 'LineWidth', 1.5);
 yline(N * 0.5, 'r--', 'LineWidth', 1.2);
 xlabel('stage'); ylabel('ESS');
 title(sprintf('有效样本量（虚线 = N/2 = %d）', round(N * 0.5)));
-xlim([1, max(stages)]); grid on; box on;
+if n_stages > 1, xlim([1, n_stages]); end
+grid on; box on;
 
 subplot(3, 1, 3);
-plot(stages, acc_hist, 'r-^', 'MarkerSize', 5, 'LineWidth', 1.5);
+plot(stages, acc_hist(2:end), 'r-^', 'MarkerSize', 5, 'LineWidth', 1.5);
 yline(0.234, 'b--', 'LineWidth', 1.2);
-ylim([0, 1]); xlim([1, max(stages)]);
+ylim([0, 1]);
+if n_stages > 1, xlim([1, n_stages]); end
 xlabel('stage'); ylabel('接受率');
 title('MH 短链接受率（虚线 = 0.234 最优）');
 grid on; box on;
