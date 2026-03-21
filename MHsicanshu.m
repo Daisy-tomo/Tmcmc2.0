@@ -564,7 +564,6 @@ function plot_joint_distributions(results, theta_true, lb, ub, param_names)
                 plot(xi_kde, f_kde, '--', 'Color', green_color, 'LineWidth', 1.8);
 
                 xlim([lb(i), ub(i)]);
-                set(ax, 'YTickLabel', {});
 
             elseif i > j
                 %% 下三角：2D 密度热图
@@ -606,11 +605,11 @@ function plot_joint_distributions(results, theta_true, lb, ub, param_names)
                 end
             end
 
-            % 去除内部刻度标签
-            if i < n_params
+            % 去除内部刻度标签（对角线子图保留两侧刻度）
+            if i < n_params && i ~= j
                 set(ax, 'XTickLabel', {});
             end
-            if j > 1
+            if j > 1 && i ~= j
                 set(ax, 'YTickLabel', {});
             end
 
