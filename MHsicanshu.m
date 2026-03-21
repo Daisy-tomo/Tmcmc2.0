@@ -538,7 +538,7 @@ function plot_joint_distributions(results, theta_true, lb, ub, param_names)
     gauss_k     = exp(-(kx.^2 + ky.^2) / (2 * sigma_sm^2));
     gauss_k     = gauss_k / sum(gauss_k(:));
 
-    teal_color  = [0.18, 0.73, 0.73];
+    teal_color  = [0.55, 0.88, 0.88];
     orange_color = [1.00, 0.65, 0.00];
     green_color  = [0.20, 0.85, 0.20];
 
@@ -562,6 +562,9 @@ function plot_joint_distributions(results, theta_true, lb, ub, param_names)
                 % 后验 KDE - 绿色虚线
                 [f_kde, xi_kde] = ksdensity(x, 'Support', [lb(i), ub(i)]);
                 plot(xi_kde, f_kde, '--', 'Color', green_color, 'LineWidth', 1.8);
+
+                % 真值竖线 - 红色实线
+                xline(theta_true(i), 'r-', 'LineWidth', 1.8);
 
                 xlim([lb(i), ub(i)]);
 
