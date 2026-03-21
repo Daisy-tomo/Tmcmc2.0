@@ -504,6 +504,130 @@ function plot_results(results, theta_true, lb, ub, param_names)
     end
     sgtitle('边缘后验分布直方图');
 
-   
+    % --- 两两参数联合分布图 ---
+    plot_joint_distributions(results, theta_true, lb, ub, param_names);
+end
+
+%% --- 两两参数联合分布图函数 ---
+function plot_joint_distributions(results, theta_true, lb, ub, param_names)
+    chain_post = results.chain_post;
+    n_params   = size(chain_post, 2);
+    n_samples  = size(chain_post, 1);
+
+    fig = figure('Name', '两两参数联合分布', 'Position', [200, 50, 950, 900]);
+
+    % 参数显示标签（LaTeX）
+    disp_labels = cell(1, n_params);
+    for i = 1:n_params
+        nm = param_names{i};
+        nm = strrep(nm, 'eta_k', '\eta_k');
+        nm = strrep(nm, 'eta_t', '\eta_t');
+        nm = strrep(nm, 'eta_T', '\eta_T');
+        nm = strrep(nm, 'eta_m', '\eta_m');
+        disp_labels{i} = nm;
+    end
+
+    n_bins   = 40;
+    n_plot   = min(5000, n_samples);
+    idx_plot = round(linspace(1, n_samples, n_plot));
+
+    % 构建 Gaussian 平滑核（避免依赖 Image Processing Toolbox）
+    sigma_sm    = 1.0;
+    ksz         = 5;
+    [kx, ky]    = meshgrid(-floor(ksz/2):floor(ksz/2));
+    gauss_k     = exp(-(kx.^2 + ky.^2) / (2 * sigma_sm^2));
+    gauss_k     = gauss_k / sum(gauss_k(:));
+
+    teal_color  = [0.18, 0.73, 0.73];
+    orange_color = [1.00, 0.65, 0.00];
+    green_color  = [0.20, 0.85, 0.20];
+
+    for i = 1:n_params
+        for j = 1:n_params
+            ax = subplot(n_params, n_params, (i-1)*n_params + j);
+
+            if i == j
+                %% 对角线：直方图 + 先验均匀分布 + 后验 KDE
+                x = chain_post(:, i);
+                histogram(x, n_bins, 'Normalization', 'pdf', ...
+                    'FaceColor', teal_color, 'EdgeColor', 'none', 'FaceAlpha', 0.85);
+                hold on;
+
+                % 先验（均匀）- 橙色实线
+                x_line  = linspace(lb(i), ub(i), 300);
+                prior_h = 1 / (ub(i) - lb(i));
+                plot(x_line, prior_h * ones(size(x_line)), '-', ...
+                    'Color', orange_color, 'LineWidth', 1.8);
+
+                % 后验 KDE - 绿色虚线
+                [f_kde, xi_kde] = ksdensity(x, 'Support', [lb(i), ub(i)]);
+                plot(xi_kde, f_kde, '--', 'Color', green_color, 'LineWidth', 1.8);
+
+                xlim([lb(i), ub(i)]);
+                set(ax, 'YTickLabel', {});
+
+            elseif i > j
+                %% 下三角：2D 密度热图
+                x_data  = chain_post(:, j);
+                y_data  = chain_post(:, i);
+                x_edges = linspace(lb(j), ub(j), n_bins + 1);
+                y_edges = linspace(lb(i), ub(i), n_bins + 1);
+                counts  = histcounts2(x_data, y_data, x_edges, y_edges);
+
+                % 平滑
+                counts_sm = filter2(gauss_k, double(counts));
+
+                x_c = (x_edges(1:end-1) + x_edges(2:end)) / 2;
+                y_c = (y_edges(1:end-1) + y_edges(2:end)) / 2;
+
+                imagesc(x_c, y_c, counts_sm');
+                axis xy;
+                colormap(ax, parula(256));
+                xlim([lb(j), ub(j)]);
+                ylim([lb(i), ub(i)]);
+
+            else
+                %% 上三角：散点图
+                x_data = chain_post(idx_plot, j);
+                y_data = chain_post(idx_plot, i);
+                scatter(x_data, y_data, 3, teal_color, 'filled', ...
+                    'MarkerFaceAlpha', 0.35);
+                xlim([lb(j), ub(j)]);
+                ylim([lb(i), ub(i)]);
+            end
+
+            % 最外侧坐标轴标签
+            if i == n_params
+                xlabel(disp_labels{j}, 'FontSize', 11, 'Interpreter', 'tex');
+            end
+            if j == 1
+                if i ~= 1
+                    ylabel(disp_labels{i}, 'FontSize', 11, 'Interpreter', 'tex', 'Rotation', 90);
+                end
+            end
+
+            % 去除内部刻度标签
+            if i < n_params
+                set(ax, 'XTickLabel', {});
+            end
+            if j > 1
+                set(ax, 'YTickLabel', {});
+            end
+
+            box on;
+            set(ax, 'FontSize', 7);
+        end
+    end
+
+    % 底部图例
+    ax_leg = axes('Position', [0.15, 0.005, 0.7, 0.04], 'Visible', 'off');
+    hold(ax_leg, 'on');
+    h1 = patch(ax_leg, NaN, NaN, teal_color,   'EdgeColor', 'none');
+    h2 = plot(ax_leg,  NaN, NaN, '-',  'Color', orange_color, 'LineWidth', 2);
+    h3 = plot(ax_leg,  NaN, NaN, '--', 'Color', green_color,  'LineWidth', 2);
+    legend(ax_leg, [h1, h2, h3], {'MCMC', '先验分布', '后验KDE'}, ...
+        'Orientation', 'horizontal', 'FontSize', 9, 'Location', 'north');
+
+    sgtitle('两两参数联合分布图', 'FontSize', 13, 'FontWeight', 'bold');
 end
 
