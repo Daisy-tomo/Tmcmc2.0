@@ -562,6 +562,7 @@ function plot_joint_distributions(results, theta_true, lb, ub, param_names)
                 % 后验 KDE - 绿色虚线
                 [f_kde, xi_kde] = ksdensity(x, 'Support', [lb(i), ub(i)]);
                 plot(xi_kde, f_kde, '--', 'Color', green_color, 'LineWidth', 1.8);
+                xline(theta_true(i), '-', 'Color', [0.7, 0.7, 0.7], 'LineWidth', 1.5);
 
                 xlim([lb(i), ub(i)]);
 
